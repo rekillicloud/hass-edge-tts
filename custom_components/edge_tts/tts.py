@@ -269,3 +269,13 @@ class EdgeTTSEntity(TextToSpeechEntity):
         except Exception as exc:
             _LOGGER.error("Error during TTS streaming: %s", exc, exc_info=True)
             raise HomeAssistantError(f"{self.name}: Streaming error: {exc}") from exc
+
+    async def async_stream_tts_audio(self, request: TTSAudioRequest) -> TTSAudioResponse:
+        """Stream TTS audio using async_synthesize_stream for true streaming.
+        
+        This method is required for async_supports_streaming_input() to return True,
+        which allows Home Assistant to use streaming instead of batch mode.
+        """
+        _LOGGER.info("🟡 async_stream_tts_audio called - using async_synthesize_stream for true streaming")
+        # Use async_synthesize_stream for real streaming
+        return TTSAudioResponse("mp3", self.async_synthesize_stream(request))
