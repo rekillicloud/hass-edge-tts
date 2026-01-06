@@ -42,6 +42,7 @@ class EdgeTTSEntity(TextToSpeechEntity):
     """The Edge TTS entity."""
 
     _attr_name = "Edge TTS"
+    _attr_supports_synthesize_streaming = True
     
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
         """Initialize Edge TTS entity."""
@@ -146,6 +147,64 @@ class EdgeTTSEntity(TextToSpeechEntity):
         elapsed_time = (end_time - start_time) * 1000
         _LOGGER.debug("load tts elapsed_time: %sms", elapsed_time)
         return mp3
+
+    async def async_synthesize_stream(
+        self, request: TTSAudioRequest
+    ) -> AsyncGenerator[bytes, None]:
+        """Synthesize speech stream using edge-tts streaming API."""
+        _LOGGER.debug("Starting TTS synthesize stream with options: %s", request.options)
+        
+        # Prepare options
+        opt = {CONF_LANG: request.language}
+        if request.language in SUPPORTED_VOICES:
+            opt[CONF_LANG] = SUPPORTED_VOICES[request.language]
+            opt['voice'] = request.language
+        opt = {**self._config_entry.options, **opt, **(request.options or {})}
+
+        lang = opt.get(CONF_LANG) or request.language or DEFAULT_LANG
+        voice = opt.get('voice') or SUPPORTED_LANGUAGES.get(lang) or DEFAULT_VOICE
+
+        for f in self._style_options:
+            if f in opt:
+                _LOGGER.warning(
+                    'Edge TTS options style/styledegree/role are no longer supported, '
+                    'please remove them from your automation or script. '
+                    'See: https://github.com/hasscc/hass-edge-tts/issues/8'
+                )
+                break
+
+        # Collect full message from stream
+        full_message = ""
+        async for message_chunk in request.message_gen:
+            full_message += message_chunk
+
+        if not full_message.strip():
+            return
+
+        _LOGGER.debug('%s: Streaming synthesis for: %s', self.name, [full_message[:50], opt])
+        
+        # Create Communicate instance with streaming support
+        tts = edge_tts.Communicate(
+            full_message,
+            voice=voice,
+            pitch=opt.get('pitch', '+0Hz'),
+            rate=opt.get('rate', '+0%'),
+            volume=opt.get('volume', '+0%'),
+        )
+
+        try:
+            # Use async stream() method for true streaming
+            async for chunk in tts.stream():
+                if chunk["type"] == "audio":
+                    yield chunk["data"]
+                else:
+                    _LOGGER.debug("Edge TTS metadata: %s", chunk)
+        except edge_tts.exceptions.NoAudioReceived as exc:
+            _LOGGER.warning("No audio received for text: %s", full_message)
+            raise HomeAssistantError(f"{self.name}: No audio received: {full_message}") from exc
+        except Exception as exc:
+            _LOGGER.error("Error during TTS streaming: %s", exc, exc_info=True)
+            raise HomeAssistantError(f"{self.name}: Streaming error: {exc}") from exc
 
     async def async_stream_tts_audio(self, request: TTSAudioRequest) -> TTSAudioResponse:
         return TTSAudioResponse("mp3", self._process_tts_stream(request))
