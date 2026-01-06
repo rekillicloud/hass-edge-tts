@@ -230,8 +230,9 @@ class EdgeTTSEntity(TextToSpeechEntity):
             raise HomeAssistantError(f"{self.name}: Streaming error: {exc}") from exc
 
     async def async_stream_tts_audio(self, request: TTSAudioRequest) -> TTSAudioResponse:
-        _LOGGER.info("🟡 async_stream_tts_audio called (legacy streaming)")
-        return TTSAudioResponse("mp3", self._process_tts_stream(request))
+        """Legacy streaming method - now uses true streaming via async_synthesize_stream."""
+        _LOGGER.info("🟡 async_stream_tts_audio called - redirecting to async_synthesize_stream for true streaming")
+        return TTSAudioResponse("mp3", self.async_synthesize_stream(request))
 
     async def _process_tts_stream(self, request: TTSAudioRequest) -> AsyncGenerator[bytes]:
         """Generate speech from an incoming message."""
