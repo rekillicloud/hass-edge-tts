@@ -1,6 +1,7 @@
 """The speech service."""
 import logging
 import time
+import asyncio
 from typing import Any
 from collections.abc import AsyncGenerator
 from homeassistant.exceptions import HomeAssistantError
@@ -212,8 +213,44 @@ class EdgeTTSEntity(TextToSpeechEntity):
 
         try:
             audio_chunk_count = 0
-            # Use async stream() method for true streaming
-            async for chunk in tts.stream():
+            
+            # Use stream_sync() in executor to avoid blocking event loop
+            # This prevents the SSL blocking call warning
+            loop = asyncio.get_event_loop()
+            chunk_queue = asyncio.Queue(maxsize=10)  # Buffer up to 10 chunks
+            exception_holder = {'error': None}
+            
+            def _stream_in_executor():
+                """Run blocking stream operations in executor thread."""
+                try:
+                    for chunk in tts.stream_sync():
+                        # Put chunks in queue (this is thread-safe)
+                        try:
+                            chunk_queue.put_nowait(chunk)
+                        except asyncio.QueueFull:
+                            # Queue is full, wait a bit (shouldn't happen with proper async consumption)
+                            pass
+                    # Signal completion
+                    chunk_queue.put_nowait(None)
+                except Exception as e:
+                    exception_holder['error'] = e
+                    chunk_queue.put_nowait(None)  # Signal completion even on error
+            
+            # Start streaming in executor
+            executor_task = loop.run_in_executor(None, _stream_in_executor)
+            
+            # Yield chunks as they arrive from executor
+            while True:
+                # Check for exceptions
+                if exception_holder['error']:
+                    raise exception_holder['error']
+                
+                # Get next chunk from queue
+                chunk = await chunk_queue.get()
+                
+                if chunk is None:  # Sentinel - stream complete
+                    break
+                
                 if chunk["type"] == "audio":
                     audio_chunk_count += 1
                     if audio_chunk_count == 1:
@@ -221,6 +258,10 @@ class EdgeTTSEntity(TextToSpeechEntity):
                     yield chunk["data"]
                 else:
                     _LOGGER.debug("Edge TTS metadata: %s", chunk)
+            
+            # Wait for executor task to complete
+            await executor_task
+            
             _LOGGER.info("🟢 Stream completed: yielded %d audio chunks", audio_chunk_count)
         except edge_tts.exceptions.NoAudioReceived as exc:
             _LOGGER.warning("No audio received for text: %s", full_message)
